@@ -82,7 +82,7 @@ routes:
 
       let url = tweetSearch ? genParams({
         "q": q,
-        "tweet_search_mode": "recent",
+        "tweet_search_mode": "live",
         "max_id": after
       })
 
