@@ -100,6 +100,15 @@ routes:
       var data = await fetchRaw(url ? params, Api.userTweets)
       resp data
 
+  get "/user/@username":
+      if @"username".len == 0: return
+      var id = await getUserId(@"username")
+
+      var variables = """{"rest_id": "$1"}""" % id
+      var params = {"variables": variables, "features": gqlFeatures}
+      var data = await fetchRaw(graphUserById ? params, Api.userRestId)
+      resp data
+
   get "/about":
     resp renderMain(renderAbout(), request, cfg, themePrefs())
 
