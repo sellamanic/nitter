@@ -3,6 +3,8 @@ import asyncdispatch, strformat, logging
 from net import Port
 from htmlgen import a
 from os import getEnv
+import types, query, formatters, consts, apiutils
+import asyncdispatch, httpclient, uri, strutils, sequtils, sugar
 
 import jester
 
@@ -61,6 +63,42 @@ settings:
 routes:
   get "/":
     resp renderMain(renderSearch(), request, cfg, themePrefs())
+
+  get "/users/?":
+      let q = @"q"
+      let page = @"page"
+      var url = userSearch ? {
+        "q": q,
+        "skip_status": "1",
+        "count": "20",
+        "page": page
+      }
+      var data = await fetchRaw(url, Api.userSearch)
+      resp data
+
+  get "/tweets/?":
+      let q = @"q"
+      let after = @"after"
+
+      let url = tweetSearch ? genParams({
+        "q": q,
+        "tweet_search_mode": "recent",
+        "max_id": after
+      })
+
+      var data = await fetchRaw(url, Api.search)
+      resp data
+
+  get "/timeline/?":
+      let q = @"q"
+      let after = @"after"
+      var userId = await getUserId(q)
+      var cursor = if after.len > 0: "\"cursor\":\"$1\"," % after else: ""
+      var variables = userTweetsVariables % [userId, cursor]
+      var params = {"variables": variables, "features": gqlFeatures}
+      var url = graphUserTweets
+      var data = await fetchRaw(url ? params, Api.userTweets)
+      resp data
 
   get "/about":
     resp renderMain(renderAbout(), request, cfg, themePrefs())
