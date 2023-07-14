@@ -78,7 +78,9 @@ routes:
 
   get "/tweets/?":
       let q = @"q"
-      let after = @"after"
+      let after = @"max_id"
+      echo q
+      echo after
 
       let url = tweetSearch ? genParams({
         "q": q,
