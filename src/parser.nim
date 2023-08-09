@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-import strutils, options, tables, times, math
+import strutils, options, times, math, tables
 import packedjson, packedjson/deserialiser
 import types, parserutils, utils
 import experimental/parser/unifiedcard
@@ -81,7 +81,7 @@ proc parseGif(js: JsonNode): Gif =
 proc parseVideo(js: JsonNode): Video =
   result = Video(
     thumb: js{"media_url_https"}.getImageStr,
-    views: js{"ext", "mediaStats", "r", "ok", "viewCount"}.getStr($js{"mediaStats", "viewCount"}.getInt),
+    views: getVideoViewCount(js),
     available: true,
     title: js{"ext_alt_text"}.getStr,
     durationMs: js{"video_info", "duration_millis"}.getInt
@@ -295,96 +295,160 @@ proc parseLegacyTweet(js: JsonNode): Tweet =
     if result.quote.isSome:
       result.quote = some parseLegacyTweet(js{"quoted_status"})
 
-proc parseTweetSearch*(js: JsonNode): Timeline =
-  if js.kind == JNull or "statuses" notin js:
-    return Timeline(beginning: true)
+proc parseTweetSearch*(js: JsonNode; after=""): Timeline =
+  result.beginning = after.len == 0
 
-  for tweet in js{"statuses"}:
-    let parsed = parseLegacyTweet(tweet)
-
-    if parsed.retweet.isSome:
-      parsed.retweet = some parseLegacyTweet(tweet{"retweeted_status"})
-
-    result.content.add @[parsed]
-
-  let cursor = js{"search_metadata", "next_results"}.getStr
-  if cursor.len > 0 and "max_id" in cursor:
-    result.bottom = cursor[cursor.find("=") + 1 .. cursor.find("&q=")]
-
-proc finalizeTweet(global: GlobalObjects; id: string): Tweet =
-  let intId = if id.len > 0: parseBiggestInt(id) else: 0
-  result = global.tweets.getOrDefault(id, Tweet(id: intId))
-
-  if result.quote.isSome:
-    let quote = get(result.quote).id
-    if $quote in global.tweets:
-      result.quote = some global.tweets[$quote]
-    else:
-      result.quote = some Tweet()
-
-  if result.retweet.isSome:
-    let rt = get(result.retweet).id
-    if $rt in global.tweets:
-      result.retweet = some finalizeTweet(global, $rt)
-    else:
-      result.retweet = some Tweet()
-
-proc parseGlobalObjects(js: JsonNode): GlobalObjects =
-  result = GlobalObjects()
-  let
-    tweets = ? js{"globalObjects", "tweets"}
-    users = ? js{"globalObjects", "users"}
-
-  for k, v in users:
-    result.users[k] = parseUser(v, k)
-
-  for k, v in tweets:
-    var tweet = parseTweet(v, v{"tweet_card"})
-    if tweet.user.id in result.users:
-      tweet.user = result.users[tweet.user.id]
-    result.tweets[k] = tweet
-
-proc parseInstructions[T](res: var Result[T]; global: GlobalObjects; js: JsonNode) =
-  if js.kind != JArray or js.len == 0:
+  if js.kind == JNull or "modules" notin js or js{"modules"}.len == 0:
     return
 
-  for i in js:
-    with r, i{"replaceEntry", "entry"}:
-      if "top" in r{"entryId"}.getStr:
-        res.top = r.getCursor
-      elif "bottom" in r{"entryId"}.getStr:
-        res.bottom = r.getCursor
+  for item in js{"modules"}:
+    with tweet, item{"status", "data"}:
+      let parsed = parseLegacyTweet(tweet)
 
-proc parseTimeline*(js: JsonNode; after=""): Timeline =
-  result = Timeline(beginning: after.len == 0)
-  let global = parseGlobalObjects(? js)
+      if parsed.retweet.isSome:
+        parsed.retweet = some parseLegacyTweet(tweet{"retweeted_status"})
 
-  let instructions = ? js{"timeline", "instructions"}
-  if instructions.len == 0: return
+      result.content.add @[parsed]
 
-  result.parseInstructions(global, instructions)
+  if result.content.len > 0:
+    result.bottom = $(result.content[^1][0].id - 1)
 
-  var entries: JsonNode
-  for i in instructions:
-    if "addEntries" in i:
-      entries = i{"addEntries", "entries"}
+proc parseUserTimelineTweet(tweet: JsonNode; users: TableRef[string, User]): Tweet =
+  result = parseTweet(tweet, tweet{"card"})
 
-  for e in ? entries:
-    let entry = e{"entryId"}.getStr
-    if "tweet" in entry or entry.startsWith("sq-I-t") or "tombstone" in entry:
-      let tweet = finalizeTweet(global, e.getEntryId)
-      if not tweet.available: continue
-      result.content.add tweet
-    elif "cursor-top" in entry:
-      result.top = e.getCursor
-    elif "cursor-bottom" in entry:
-      result.bottom = e.getCursor
-    elif entry.startsWith("sq-cursor"):
-      with cursor, e{"content", "operation", "cursor"}:
-        if cursor{"cursorType"}.getStr == "Bottom":
-          result.bottom = cursor{"value"}.getStr
-        else:
-          result.top = cursor{"value"}.getStr
+  if result.isNil or not result.available:
+    return
+
+  with user, tweet{"user"}:
+    let userId = user{"id_str"}.getStr
+    if user{"ext_is_blue_verified"}.getBool(false):
+      users[userId].verified = users[userId].verified or true
+    result.user = users[userId]
+
+proc parseUserTimeline*(js: JsonNode; after=""): Profile =
+  result = Profile(tweets: Timeline(beginning: after.len == 0))
+
+  if js.kind == JNull or "response" notin js or "twitter_objects" notin js:
+    return
+
+  var users = newTable[string, User]()
+  for userId, user in js{"twitter_objects", "users"}:
+    users[userId] = parseUser(user)
+
+  for entity in js{"response", "timeline"}:
+    let
+      tweetId = entity{"tweet", "id"}.getId
+      isPinned = entity{"tweet", "is_pinned"}.getBool(false)
+
+    with tweet, js{"twitter_objects", "tweets", $tweetId}:
+      var parsed = parseUserTimelineTweet(tweet, users)
+
+      if not parsed.isNil and parsed.available:
+        if parsed.quote.isSome:
+          parsed.quote = some parseUserTimelineTweet(tweet{"quoted_status"}, users)
+
+        if parsed.retweet.isSome:
+          let retweet = parseUserTimelineTweet(tweet{"retweeted_status"}, users)
+          if retweet.quote.isSome:
+            retweet.quote = some parseUserTimelineTweet(tweet{"retweeted_status", "quoted_status"}, users)
+          parsed.retweet = some retweet
+
+      if isPinned:
+        parsed.pinned = true
+        result.pinned = some parsed
+      else:
+        result.tweets.content.add parsed
+
+  result.tweets.bottom = js{"response", "cursor", "bottom"}.getStr
+
+# proc finalizeTweet(global: GlobalObjects; id: string): Tweet =
+#   let intId = if id.len > 0: parseBiggestInt(id) else: 0
+#   result = global.tweets.getOrDefault(id, Tweet(id: intId))
+
+#   if result.quote.isSome:
+#     let quote = get(result.quote).id
+#     if $quote in global.tweets:
+#       result.quote = some global.tweets[$quote]
+#     else:
+#       result.quote = some Tweet()
+
+#   if result.retweet.isSome:
+#     let rt = get(result.retweet).id
+#     if $rt in global.tweets:
+#       result.retweet = some finalizeTweet(global, $rt)
+#     else:
+#       result.retweet = some Tweet()
+
+# proc parsePin(js: JsonNode; global: GlobalObjects): Tweet =
+#   let pin = js{"pinEntry", "entry", "entryId"}.getStr
+#   if pin.len == 0: return
+
+#   let id = pin.getId
+#   if id notin global.tweets: return
+
+#   global.tweets[id].pinned = true
+#   return finalizeTweet(global, id)
+
+# proc parseGlobalObjects(js: JsonNode): GlobalObjects =
+#   result = GlobalObjects()
+#   let
+#     tweets = ? js{"globalObjects", "tweets"}
+#     users = ? js{"globalObjects", "users"}
+
+#   for k, v in users:
+#     result.users[k] = parseUser(v, k)
+
+#   for k, v in tweets:
+#     var tweet = parseTweet(v, v{"card"})
+#     if tweet.user.id in result.users:
+#       tweet.user = result.users[tweet.user.id]
+#     result.tweets[k] = tweet
+
+# proc parseInstructions(res: var Profile; global: GlobalObjects; js: JsonNode) =
+#   if js.kind != JArray or js.len == 0:
+#     return
+
+#   for i in js:
+#     if res.tweets.beginning and i{"pinEntry"}.notNull:
+#       with pin, parsePin(i, global):
+#         res.pinned = some pin
+
+#     with r, i{"replaceEntry", "entry"}:
+#       if "top" in r{"entryId"}.getStr:
+#         res.tweets.top = r.getCursor
+#       elif "bottom" in r{"entryId"}.getStr:
+#         res.tweets.bottom = r.getCursor
+
+# proc parseTimeline*(js: JsonNode; after=""): Profile =
+#   result = Profile(tweets: Timeline(beginning: after.len == 0))
+#   let global = parseGlobalObjects(? js)
+
+#   let instructions = ? js{"timeline", "instructions"}
+#   if instructions.len == 0: return
+
+#   result.parseInstructions(global, instructions)
+
+#   var entries: JsonNode
+#   for i in instructions:
+#     if "addEntries" in i:
+#       entries = i{"addEntries", "entries"}
+
+#   for e in ? entries:
+#     let entry = e{"entryId"}.getStr
+#     if "tweet" in entry or entry.startsWith("sq-I-t") or "tombstone" in entry:
+#       let tweet = finalizeTweet(global, e.getEntryId)
+#       if not tweet.available: continue
+#       result.tweets.content.add tweet
+#     elif "cursor-top" in entry:
+#       result.tweets.top = e.getCursor
+#     elif "cursor-bottom" in entry:
+#       result.tweets.bottom = e.getCursor
+#     elif entry.startsWith("sq-cursor"):
+#       with cursor, e{"content", "operation", "cursor"}:
+#         if cursor{"cursorType"}.getStr == "Bottom":
+#           result.tweets.bottom = cursor{"value"}.getStr
+#         else:
+#           result.tweets.top = cursor{"value"}.getStr
 
 proc parsePhotoRail*(js: JsonNode): PhotoRail =
   with error, js{"error"}:

@@ -53,16 +53,13 @@ proc fetchProfile*(after: string; query: Query; skipRail=false;
 
   result =
     case query.kind
-    of posts: await getGraphUserTweets(userId, TimelineKind.tweets, after)
+    of posts: await getUserTimeline(userId, after)
     of replies: await getGraphUserTweets(userId, TimelineKind.replies, after)
     of media: await getGraphUserTweets(userId, TimelineKind.media, after)
     else: Profile(tweets: await getTweetSearch(query, after))
 
   result.user = await user
   result.photoRail = await rail
-
-  if result.user.protected or result.user.suspended:
-    return
 
   result.tweets.query = query
 
@@ -125,7 +122,7 @@ proc createTimelineRouter*(cfg: Config) =
       # used for the infinite scroll feature
       if @"scroll".len > 0:
         if query.fromUser.len != 1:
-          var timeline = (await getGraphSearch(query, after)).tweets
+          var timeline = await getTweetSearch(query, after)
           if timeline.content.len == 0: resp Http404
           timeline.beginning = true
           resp $renderTweetSearch(timeline, prefs, getPath())
