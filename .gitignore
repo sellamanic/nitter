@@ -11,3 +11,11 @@ nitter
 /public/md/*.html
 nitter.conf
 dump.rdb
+config.py
+.idea/*
+.vscode
+.data
+run.ini
+*.ldj*
+log
+data
