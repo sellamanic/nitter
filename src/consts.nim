@@ -11,6 +11,7 @@ const
   photoRail* = api / "1.1/statuses/media_timeline.json"
   userSearch* = api / "1.1/users/search.json"
   tweetSearch* = api / "1.1/search/universal.json"
+  tweetSearchOld* = api / "1.1/search/tweets.json"
 
   # oldUserTweets* = api / "2/timeline/profile"
 
