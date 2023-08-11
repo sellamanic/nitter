@@ -91,16 +91,18 @@ routes:
       resp data
 
   get "/tweets_universal/?":
-      let q = @"q"
-      let after = @"max_id"
-      echo q
-      echo after
+      var q = @"q"
+      var max_id = @"max_id"
+
+      if max_id.len > 0:
+        q &= " max_id:" & max_id
 
       let url = tweetSearch ? genParams({
-        "q": q,
-        "tweet_search_mode": "live",
-        "max_id": after
+        "q": q ,
+        "modules": "status",
+        "result_type": "recent",
       })
+      logging.info(url)
 
       var data = await fetchRaw(url, Api.search)
       resp data
