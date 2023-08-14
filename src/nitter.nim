@@ -70,7 +70,8 @@ routes:
         "q": q,
         "skip_status": "1",
         "count": "20",
-        "page": page
+        "page": page,
+        "include_ext_is_blue_verified": "true"
       }
       var data = await fetchRaw(url, Api.userSearch)
       resp data
